@@ -10,7 +10,8 @@ from reliable_intake_engine.crm_adapter import (
     ContactUpsertResult,
     SQLiteSimulatedCRMAdapter,
 )
-from reliable_intake_engine.database import EnquiryEvent
+from reliable_intake_engine.database import EnquiryDatabase, EnquiryEvent
+from reliable_intake_engine.retry_processor import RetryProcessor
 from reliable_intake_engine.main import create_app
 
 SAFE_FAILURE_REASON = "CRM handoff failed; adapter exception details are withheld."
@@ -339,3 +340,38 @@ def test_exhausted_failures_remain_visible_as_terminal_failure(
         SAFE_FAILURE_REASON,
     )
     assert len(read_contacts(database_path)) == 0
+
+
+def test_recovery_processes_event_left_in_received_state(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "stranded_received.sqlite3"
+    clock = ControlledClock()
+
+    database = EnquiryDatabase(database_path)
+    database.initialize()
+
+    adapter = SQLiteSimulatedCRMAdapter(database_path)
+    adapter.initialize()
+
+    recorded = database.record(VALID_ENQUIRY, now=clock.now)
+    assert recorded.outcome == "accepted"
+    assert recorded.event.processing_status == "received"
+    assert recorded.event.attempt_count == 0
+
+    processor = RetryProcessor(database, adapter, clock)
+    result = processor.process_due()
+
+    assert result == {
+        "claimed": 1,
+        "processed": 1,
+        "rescheduled": 0,
+        "failed": 0,
+    }
+    assert read_event_state(database_path, VALID_ENQUIRY["event_id"]) == (
+        "processed",
+        1,
+        None,
+        None,
+    )
+    assert len(read_contacts(database_path)) == 1
