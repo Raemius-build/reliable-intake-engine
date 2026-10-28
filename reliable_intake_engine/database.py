@@ -288,6 +288,9 @@ class EnquiryDatabase:
                 """
                 SELECT * FROM enquiry_events
                 WHERE (
+                    processing_status = 'received'
+                    AND attempt_count < ?
+                ) OR (
                     processing_status = 'pending_retry'
                     AND next_retry_at <= ?
                 ) OR (
@@ -298,7 +301,7 @@ class EnquiryDatabase:
                 ORDER BY COALESCE(next_retry_at, lease_expires_at), id
                 LIMIT 1
                 """,
-                (now_text, now_text, max_attempts),
+                (max_attempts, now_text, now_text, max_attempts),
             ).fetchone()
             if row is None:
                 return None
